@@ -181,10 +181,21 @@ function callSelectAssetsBySelectedAccountGroup(
 
 export const selectAssetsBySelectedAccountGroup = createDeepEqualSelector(
   getStateForAssetSelector,
-  (assetsState) =>
-    filterArcUsdcErc20Token(
+  (assetsState) => {
+    const assets = filterArcUsdcErc20Token(
       callSelectAssetsBySelectedAccountGroup(assetsState),
-    ),
+    );
+    const mappedAssets: AccountGroupAssets = {};
+    for (const [networkId, chainAssets] of Object.entries(assets)) {
+      mappedAssets[networkId] = chainAssets.map((asset) => {
+        if (asset.name?.toLowerCase() === 'staked ethereum') {
+          return { ...asset, name: 'Staked Ethereum', isStaked: true } as Asset;
+        }
+        return asset;
+      });
+    }
+    return mappedAssets;
+  }
 );
 
 /**
@@ -234,98 +245,7 @@ export const selectAssetsByAccountGroupId = (
   return allAssets[accountGroupId] ?? EMPTY_ACCOUNT_GROUP_ASSETS;
 };
 
-// BIP44 MAINTENANCE: Add these items at controller level, but have them being optional on selectAssetsBySelectedAccountGroup to avoid breaking changes
-const selectStakedAssets = createDeepEqualSelector(
-  [
-    (state: RootState) =>
-      state.engine.backgroundState.AccountsController.internalAccounts.accounts,
-    selectAccountsByChainId,
-    selectEvmNetworkConfigurationsByChainId,
-    selectCurrencyRates,
-    selectCurrentCurrency,
-  ],
-  (
-    internalAccounts,
-    accountsByChainId,
-    networkConfigurationsByChainId,
-    currencyRates,
-    currentCurrency,
-  ) => {
-    const stakedAssets = Object.entries(accountsByChainId)
-      // Only include mainnet and hoodi
-      .filter(([chainId, _]) => chainId === '0x1' || chainId === '0x88bb0')
-      .flatMap(([chainId, chainAccounts]) =>
-        Object.entries(chainAccounts)
-          .filter(
-            ([_, accountInformation]) =>
-              accountInformation.stakedBalance &&
-              hexToBigInt(accountInformation.stakedBalance) > 0,
-          )
-          .map(([address, accountInformation]) => {
-            const stakedBalance = accountInformation.stakedBalance as Hex;
-
-            const nativeCurrency =
-              networkConfigurationsByChainId[chainId as Hex]?.nativeCurrency ||
-              'NATIVE';
-
-            const nativeToken = {
-              address: getNativeTokenAddress(chainId as Hex),
-              decimals: 18,
-              name: nativeCurrency === 'ETH' ? 'Ethereum' : nativeCurrency,
-              symbol: nativeCurrency,
-            };
-
-            const conversionRate =
-              currencyRates[nativeCurrency]?.conversionRate;
-
-            const fiatBalance = conversionRate
-              ? weiToFiatNumber(hexToBN(stakedBalance), conversionRate)
-              : undefined;
-
-            const account = Object.values(internalAccounts).find(
-              (internalAccount) =>
-                internalAccount.address === address.toLowerCase(),
-            );
-
-            if (!account) {
-              return undefined;
-            }
-
-            const stakedAsset = {
-              accountType: account.type,
-              assetId: nativeToken.address,
-              isNative: true,
-              isStaked: true,
-              address: nativeToken.address,
-              image: '',
-              name: 'Staked Ethereum',
-              symbol: nativeToken.symbol,
-              accountId: account.id,
-              decimals: nativeToken.decimals,
-              rawBalance: stakedBalance,
-              balance: fromWei(stakedBalance),
-              fiat: fiatBalance
-                ? {
-                    balance: Number(fiatBalance),
-                    currency: currentCurrency,
-                    conversionRate,
-                  }
-                : undefined,
-              chainId,
-            } as Asset;
-
-            return {
-              chainId,
-              accountId: account.id,
-              stakedAsset,
-            };
-          })
-          .filter((item): item is NonNullable<typeof item> => Boolean(item)),
-      );
-
-    return stakedAssets;
-  },
-);
+// selectStakedAssets was removed because the StakedBalanceDataSource in AssetsController now provides it
 
 export const selectEnabledNetworks = createDeepEqualSelector(
   [selectEnabledNetworksByNamespace],
@@ -350,14 +270,12 @@ export const createSelectSortedAssetsBySelectedAccountGroup = (
       selectAssetsBySelectedAccountGroup,
       enabledNetworksSelector,
       selectTokenSortConfig,
-      selectStakedAssets,
       selectHideZeroBalanceTokens,
     ],
     (
       bip44Assets,
       enabledNetworks,
       tokenSortConfig,
-      stakedAssets,
       hideZeroBalance,
     ) => {
       const filteredAssets = Object.entries(bip44Assets)
@@ -376,7 +294,6 @@ export const createSelectSortedAssetsBySelectedAccountGroup = (
         );
       return mergeStakedSortAndDedupeAssets(
         filteredAssets,
-        stakedAssets,
         tokenSortConfig,
       );
     },
@@ -392,35 +309,15 @@ interface SortedAssetItem {
   isStaked: boolean;
 }
 
-interface StakedAssetEntry {
-  chainId: string;
-  accountId: string;
-  stakedAsset: Asset;
-}
-
 /**
  * Merges staked assets into the list, sorts by token sort config, and deduplicates by assetId-chainId-isStaked.
  * Shared by createSelectSortedAssetsBySelectedAccountGroup and selectSortedAssetsBySelectedAccountGroupForChainIds.
  */
 function mergeStakedSortAndDedupeAssets(
   filteredChainAssets: Asset[],
-  stakedAssets: StakedAssetEntry[],
   tokenSortConfig: ReturnType<typeof selectTokenSortConfig>,
 ): SortedAssetItem[] {
   const assets = [...filteredChainAssets];
-  const stakedAssetsArray: Asset[] = [];
-  for (const asset of assets) {
-    if (asset.isNative) {
-      const stakedAsset = stakedAssets.find(
-        (item) =>
-          item.chainId === asset.chainId && item.accountId === asset.accountId,
-      );
-      if (stakedAsset) {
-        stakedAssetsArray.push({ ...stakedAsset.stakedAsset } as Asset);
-      }
-    }
-  }
-  assets.push(...stakedAssetsArray);
 
   const tokensSorted = sortAssetsWithPriority(
     assets.map((asset) => ({
@@ -481,9 +378,8 @@ export const selectSortedAssetsBySelectedAccountGroupForChainIds =
       selectAssetsBySelectedAccountGroup,
       (_state: RootState, chainIds: string[]) => chainIds,
       selectTokenSortConfig,
-      selectStakedAssets,
     ],
-    (bip44Assets, chainIds, tokenSortConfig, stakedAssets) => {
+    (bip44Assets, chainIds, tokenSortConfig) => {
       const allowedIds = buildAllowedNetworkIdSet(chainIds);
       const filteredAssets = Object.entries(bip44Assets)
         .filter(([networkId]) => allowedIds.has(networkId))
@@ -494,7 +390,6 @@ export const selectSortedAssetsBySelectedAccountGroupForChainIds =
         );
       return mergeStakedSortAndDedupeAssets(
         filteredAssets,
-        stakedAssets,
         tokenSortConfig,
       );
     },
@@ -509,10 +404,9 @@ export const selectSortedAssetsBySelectedAccountGroupForChainIdsByBalance =
     [
       selectAssetsBySelectedAccountGroup,
       (_state: RootState, chainIds: string[]) => chainIds,
-      selectStakedAssets,
       selectHideZeroBalanceTokens,
     ],
-    (bip44Assets, chainIds, stakedAssets, hideZeroBalance) => {
+    (bip44Assets, chainIds, hideZeroBalance) => {
       const allowedIds = buildAllowedNetworkIdSet(chainIds);
       const filteredAssets = Object.entries(bip44Assets)
         .filter(([networkId]) => allowedIds.has(networkId))
@@ -526,7 +420,6 @@ export const selectSortedAssetsBySelectedAccountGroupForChainIdsByBalance =
         );
       return mergeStakedSortAndDedupeAssets(
         filteredAssets,
-        stakedAssets,
         BALANCE_SORT_CONFIG,
       );
     },
@@ -536,7 +429,6 @@ export const selectSortedAssetsBySelectedAccountGroupForChainIdsByBalance =
 export const selectAsset = createSelector(
   [
     selectAssetsBySelectedAccountGroup,
-    selectStakedAssets,
     selectAllTokens,
     selectSelectedInternalAccountAddress,
     selectSelectedInternalAccountByScope,
@@ -555,7 +447,6 @@ export const selectAsset = createSelector(
   ],
   (
     assets,
-    stakedAssets,
     allTokens,
     selectedAddress,
     getAccountByScope,
@@ -570,14 +461,7 @@ export const selectAsset = createSelector(
     // Get the account for this chain from the selected account group
     const scopedAccountId = getAccountByScope(chainIdInCaip)?.id;
 
-    const asset = isStaked
-      ? stakedAssets.find(
-          (item) =>
-            item.chainId === chainId &&
-            (!scopedAccountId || item.accountId === scopedAccountId) &&
-            item.stakedAsset.assetId === address,
-        )?.stakedAsset
-      : assets[chainId]?.find((item: Asset & { isStaked?: boolean }) => {
+    const asset = assets[chainId]?.find((item: Asset & { isStaked?: boolean }) => {
           const itemIsStaked = Boolean(item.isStaked);
           const targetIsStaked = Boolean(isStaked);
           return (

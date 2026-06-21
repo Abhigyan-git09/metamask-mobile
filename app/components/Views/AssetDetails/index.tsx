@@ -348,11 +348,11 @@ const AssetDetails = (props: InnerProps) => {
 
     const balance = tokenBalance
       ? renderFromTokenMinimalUnit(tokenBalance.toString(), decimals)
-      : undefined;
+      : token.balance;
 
-    const balanceFiat = balance
+    const balanceFiat = tokenBalance
       ? balanceToFiat(balance, conversionRate, exchangeRate, currentCurrency)
-      : undefined;
+      : token.balanceFiat;
 
     if (balance === undefined && balanceFiat === undefined) {
       // Couldn't load balance

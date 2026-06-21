@@ -18,7 +18,8 @@ import {
 } from '../../../../util/number';
 import { getFormattedAddressFromInternalAccount } from '../../../../core/Multichain/utils';
 import { EVM_SCOPE } from '../../Earn/constants/networks';
-import { selectAsset } from '../../../../selectors/assets/assets-list';
+import { selectAssetsBySelectedAccountGroup, selectAsset } from '../../../../selectors/assets/assets-list';
+import { toWei } from '../../../../util/number';
 
 const useBalance = (chainId?: Hex) => {
   const accountsByChainId = useSelector(selectAccountsByChainId);
@@ -33,13 +34,29 @@ const useBalance = (chainId?: Hex) => {
   const currencyRates = useSelector(selectCurrencyRates);
   const balanceChainId = chainId || selectedChainId;
   const conversionRate = currencyRates?.ETH?.conversionRate ?? 1;
+  const assetsByChain = useSelector(selectAssetsBySelectedAccountGroup);
+  
   const rawAccountBalance = selectedAddress
     ? accountsByChainId[balanceChainId]?.[selectedAddress]?.balance
     : '0';
 
-  const stakedBalance = selectedAddress
-    ? accountsByChainId[balanceChainId]?.[selectedAddress]?.stakedBalance || '0'
-    : '0';
+  const stakedNativeAsset = useMemo(() => {
+    return assetsByChain[balanceChainId]?.find(
+      (asset) =>
+        asset.isStaked && asset.assetId === getNativeTokenAddress(balanceChainId)
+    );
+  }, [assetsByChain, balanceChainId]);
+
+  const stakedBalanceDecimal = stakedNativeAsset?.balance || '0';
+  const stakedBalance = useMemo(() => {
+    if (stakedBalanceDecimal === '0') return '0x0';
+    try {
+      const weiBN = toWei(stakedBalanceDecimal);
+      return '0x' + weiBN.toString(16);
+    } catch {
+      return '0x0';
+    }
+  }, [stakedBalanceDecimal]);
 
   const balanceETH = useMemo(
     () => renderFromWei(rawAccountBalance),
